@@ -21,6 +21,8 @@ const _fallbackIds = new Set<string>();
 const DEFAULT_FLOOR_HEIGHT_M = 4.0;
 /** 1도 위도 ≈ 111,320m */
 const LAT_M_PER_DEG = 111_320;
+const FLOORSTACK_CREATE_TIMEOUT_MS = 45_000;
+const MAX_ROOM_UNITS_PER_FLOOR = 12;
 
 const POSITION_OFFSETS: Record<string, [number, number]> = {
   center:    [ 0.00,  0.00],
@@ -376,7 +378,12 @@ function normalizeFunctionId(room: RoomLayout): string {
 }
 
 function getRoomsWithFill(floor: FloorSpec): RoomLayout[] {
-  const rooms = floor.rooms.filter((room) => Number.isFinite(room.area_m2) && room.area_m2 > 0);
+  const rawRooms = Array.isArray(floor.rooms)
+    ? floor.rooms
+    : floor.rooms && typeof floor.rooms === 'object'
+      ? Object.values(floor.rooms as Record<string, RoomLayout>)
+      : [];
+  const rooms = rawRooms.filter((room) => Number.isFinite(room.area_m2) && room.area_m2 > 0);
   if (!rooms.length) return [];
 
   const roomArea = rooms.reduce((sum, room) => sum + room.area_m2, 0);
@@ -391,6 +398,25 @@ function estimateTargetRowCount(roomCount: number): number {
   if (roomCount <= 3) return 2;
   if (roomCount <= 6) return 3;
   return Math.max(3, Math.ceil(Math.sqrt(roomCount)));
+}
+
+function simplifyRoomsForPlan(rooms: RoomLayout[], maxUnits: number): RoomLayout[] {
+  if (rooms.length <= maxUnits) return rooms;
+
+  const sorted = [...rooms].sort((a, b) => b.area_m2 - a.area_m2);
+  const kept = sorted.slice(0, maxUnits - 1);
+  const merged = sorted.slice(maxUnits - 1);
+  const mergedArea = merged.reduce((sum, room) => sum + room.area_m2, 0);
+
+  return [
+    ...kept,
+    {
+      name: `통합 기타 (${merged.length}실)`,
+      area_m2: mergedArea,
+      function_id: 'merged-other',
+      unit_type: 'CORRIDOR',
+    },
+  ];
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -627,7 +653,7 @@ function buildLShapeRoomSlices(
 }
 
 function buildRoomSlices(floor: FloorSpec): { width: number; depth: number; slices: RoomSlice[] } | null {
-  const rooms = getRoomsWithFill(floor);
+  const rooms = simplifyRoomsForPlan(getRoomsWithFill(floor), MAX_ROOM_UNITS_PER_FLOOR);
   if (!rooms.length) return null;
 
   const { w, d } = areaToRect(floor.areaM2);
@@ -885,7 +911,7 @@ function buildZoneSlices(
 }
 
 function buildCourtyardURoomSlices(floor: FloorSpec): { width: number; depth: number; slices: RoomSlice[] } | null {
-  const rooms = getRoomsWithFill(floor);
+  const rooms = simplifyRoomsForPlan(getRoomsWithFill(floor), MAX_ROOM_UNITS_PER_FLOOR);
   if (!rooms.length) return null;
 
   const sortedRooms = [...rooms].sort((a, b) => b.area_m2 - a.area_m2);
@@ -1228,26 +1254,55 @@ async function addFloorStackAtSiteCenter(
   name: string,
   request: Parameters<typeof Forma.elements.floorStack.createFromFloors>[0],
   zOffsetM = 0,
+  options?: { skipSiteContext?: boolean },
 ): Promise<{ urn: string; path: string; centerX: number; centerY: number; placementZ: number }> {
-  const bounds = await getSiteBounds();
-  const elevationRef = await getElevationReferencePath();
+  const skipSiteContext = options?.skipSiteContext ?? false;
+  const bounds = skipSiteContext ? null : await getSiteBounds();
+  const elevationRef = skipSiteContext ? null : await getElevationReferencePath();
   const centerX = bounds?.centerX ?? 0;
   const centerY = bounds?.centerY ?? 0;
   const baseElevation = bounds?.baseElevation ?? 0;
   const elevationPath = elevationRef?.path ?? bounds?.sourcePath ?? '';
-  const localMeshElevation = !bounds?.isGeographic && elevationPath
+  const localMeshElevation = !skipSiteContext && !bounds?.isGeographic && elevationPath
     ? await sampleLocalElevationFromMesh(elevationPath, centerX, centerY)
     : null;
   const placementZ = localMeshElevation ?? baseElevation;
-  const { urn } = await Forma.elements.floorStack.createFromFloors(request);
-  const { path } = await Forma.proposal.addElement({
-    urn,
-    name,
-    transform: makeTranslationTransform(centerX, centerY, placementZ + zOffsetM),
-  });
+  const { urn } = await withTimeout(
+    Forma.elements.floorStack.createFromFloors(request),
+    FLOORSTACK_CREATE_TIMEOUT_MS,
+    `${name}: FloorStack 생성 응답이 지연되고 있습니다.`,
+  );
+  const { path } = await withTimeout(
+    Forma.proposal.addElement({
+      urn,
+      name,
+      transform: makeTranslationTransform(centerX, centerY, placementZ + zOffsetM),
+    }),
+    FLOORSTACK_CREATE_TIMEOUT_MS,
+    `${name}: Proposal 추가 응답이 지연되고 있습니다.`,
+  );
 
   _elementPaths.add(path);
   return { urn, path, centerX, centerY, placementZ: placementZ + zOffsetM };
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 }
 
 export async function testFloorStackPlanUnits(): Promise<{
@@ -1330,6 +1385,8 @@ export async function testFloorStackPlanUnits(): Promise<{
           floors: attempt.floors,
           plans: attempt.plans,
         },
+        0,
+        { skipSiteContext: true },
       );
       results.push({ name: attempt.name, ok: true });
       return {
@@ -1385,10 +1442,25 @@ export async function recreateBuildingsWithFloorPlans(
       includeFunctionIds: true,
       includePrograms: true,
     });
+    const simplifiedFloors = floorSpecs
+      .map((floor) => {
+        const originalRooms = getRoomsWithFill(floor);
+        const simplifiedRooms = simplifyRoomsForPlan(originalRooms, MAX_ROOM_UNITS_PER_FLOOR);
+        return originalRooms.length > simplifiedRooms.length
+          ? `${floor.label}(${originalRooms.length}실→${simplifiedRooms.length}실)`
+          : null;
+      })
+      .filter((label): label is string => label !== null);
     const roomUnits = plans.reduce((sum, plan) => sum + plan.units.length, 0);
     const basementDepthM = floorSpecs
       .filter((floor) => floor.belowGrade)
       .reduce((sum, floor) => sum + floor.heightM, 0);
+
+    if (simplifiedFloors.length > 0) {
+      warnings.push(
+        `${building.name}: ${simplifiedFloors.join(', ')} 층은 Forma 생성 안정성을 위해 자동 단순화했습니다.`,
+      );
+    }
 
     if (plans.length === 0 || roomUnits === 0) {
       failed.push({
@@ -1637,7 +1709,7 @@ export async function placeBuildingMasses(
           footprintArea,
           totalFloorArea,
           floorDetails: floorSpecs.map((floor) => `${floor.label}: ${floor.areaM2}㎡ / ${floor.heightM}m`),
-          roomUnitCount: floorSpecs.reduce((sum, floor) => sum + getRoomsWithFill(floor).length, 0),
+          roomUnitCount: floorSpecs.reduce((sum, floor) => sum + simplifyRoomsForPlan(getRoomsWithFill(floor), MAX_ROOM_UNITS_PER_FLOOR).length, 0),
           color,
           method: 'building_element',
           debug: {
@@ -1674,7 +1746,7 @@ export async function placeBuildingMasses(
           footprintArea,
           totalFloorArea,
           floorDetails: floorSpecs.map((floor) => `${floor.label}: ${floor.areaM2}㎡ / ${floor.heightM}m`),
-          roomUnitCount: floorSpecs.reduce((sum, floor) => sum + getRoomsWithFill(floor).length, 0),
+          roomUnitCount: floorSpecs.reduce((sum, floor) => sum + simplifyRoomsForPlan(getRoomsWithFill(floor), MAX_ROOM_UNITS_PER_FLOOR).length, 0),
           color,
           method: 'render_fallback',
           debug: {

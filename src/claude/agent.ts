@@ -62,6 +62,15 @@ export interface Message {
 }
 
 export type ProgressCallback = (text: string) => void;
+export interface RunAgentOptions {
+  apiKey?: string;
+}
+
+const DIRECT_RECREATE_MARKERS = [
+  'recreate_buildings_with_floor_plans',
+  '실배치가 포함된 새 건물을 재생성',
+  'test_floorstack_plan_units는 사용하지 말고 바로',
+];
 
 /**
  * Claude Tool Use 루프.
@@ -71,8 +80,9 @@ export async function runAgent(
   userMessage: string,
   history: Message[],
   onProgress: ProgressCallback,
+  options?: RunAgentOptions,
 ): Promise<string> {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+  const apiKey = options?.apiKey?.trim() || import.meta.env.VITE_ANTHROPIC_API_KEY;
 
   if (!apiKey || apiKey.startsWith('sk-ant-여기에')) {
     return '⚠️ API 키가 설정되지 않았습니다.\n.env 파일에 VITE_ANTHROPIC_API_KEY를 입력하고 서버를 재시작하세요.';
@@ -82,6 +92,10 @@ export async function runAgent(
     apiKey,
     dangerouslyAllowBrowser: true,
   });
+
+  if (DIRECT_RECREATE_MARKERS.some((marker) => userMessage.includes(marker))) {
+    return await runDirectFloorPlanRecreate(client, userMessage, onProgress);
+  }
 
   // 대화 히스토리 → Anthropic 메시지 형식 변환
   const messages: Anthropic.MessageParam[] = [
@@ -147,6 +161,140 @@ export async function runAgent(
   }
 
   return '처리 한도를 초과했습니다. 질문을 더 구체적으로 입력해주세요.';
+}
+
+async function runDirectFloorPlanRecreate(
+  client: Anthropic,
+  userMessage: string,
+  onProgress: ProgressCallback,
+): Promise<string> {
+  onProgress('PDF 내용을 실배치 JSON으로 정리 중...');
+
+  const extractionResponse = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 5000,
+    system: `You extract structured building requirements from a PDF-based user message.
+Return JSON only. No markdown, no explanation.
+The JSON root must be:
+{
+  "requirements": {
+    "project_name": "string",
+    "location": "string",
+    "site_limits": {},
+    "buildings": [
+      {
+        "name": "string",
+        "target_floor_area": 0,
+        "target_floors": 0,
+        "footprint_area": 0,
+        "mass_layout_type": "AUTO",
+        "position_hint": "center",
+        "floor_breakdown": {},
+        "floor_heights_m": {},
+        "floor_layout_types": {},
+        "floor_plans": {},
+        "basement": {
+          "floors": 0,
+          "area_m2": 0,
+          "use": "string",
+          "floor_breakdown": {},
+          "floor_heights_m": {},
+          "floor_layout_types": {},
+          "floor_plans": {}
+        }
+      }
+    ]
+  }
+}
+Rules:
+- Return valid JSON only.
+- Use at least one building.
+- Keep floor keys like B3, B2, B1, 1F, 2F.
+- Each room object must contain name and area_m2.
+- Use unit_type only when confident: CORE, CORRIDOR, LIVING_UNIT, PARKING.
+- If too many tiny rooms exist on one floor, merge some of them into one "기타" room.
+- If the PDF mentions ㄱ자/L-shape, use floor_layout_types. If it mentions courtyard/ㄷ자/U-shape, use mass_layout_type.`,
+    messages: [{ role: 'user', content: userMessage }],
+  });
+
+  const textBlock = extractionResponse.content.find((b) => b.type === 'text');
+  const raw = textBlock?.type === 'text' ? textBlock.text.trim() : '';
+  const jsonText = extractJsonObject(raw);
+  if (!jsonText) {
+    throw new Error('PDF에서 재생성용 JSON을 추출하지 못했습니다.');
+  }
+
+  let payload: Record<string, any>;
+  try {
+    payload = JSON.parse(jsonText);
+  } catch (error) {
+    const repaired = await repairRequirementsJson(client, jsonText, String(error), onProgress);
+    try {
+      payload = JSON.parse(repaired);
+    } catch (repairError) {
+      const repairedAgain = await repairRequirementsJson(client, repaired, String(repairError), onProgress);
+      try {
+        payload = JSON.parse(repairedAgain);
+      } catch (secondRepairError) {
+        const loose = tryParseLooseObject(repairedAgain);
+        if (loose && typeof loose === 'object') {
+          payload = loose as Record<string, any>;
+        } else {
+          throw new Error(`재생성용 JSON 파싱에 실패했습니다: ${String(secondRepairError)}`);
+        }
+      }
+    }
+  }
+
+  onProgress('Forma 실배치 재생성 실행 중...');
+  const result = await executeFormaTool('recreate_buildings_with_floor_plans', payload);
+  return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+}
+
+async function repairRequirementsJson(
+  client: Anthropic,
+  brokenJson: string,
+  parseError: string,
+  onProgress: ProgressCallback,
+): Promise<string> {
+  onProgress('JSON ??? ?? ???? ?...');
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 5000,
+    system: 'You repair malformed JSON. Return valid JSON only. No markdown, no explanation. Preserve the original structure and values as much as possible. The output must be a single valid JSON object.',
+    messages: [{
+      role: 'user',
+      content: `The following JSON failed to parse.\nParse error:\n${parseError}\n\nMalformed JSON:\n${brokenJson}`,
+    }],
+  });
+
+  const textBlock = response.content.find((b) => b.type === 'text');
+  const raw = textBlock?.type === 'text' ? textBlock.text.trim() : '';
+  const repaired = extractJsonObject(raw);
+  if (!repaired) {
+    throw new Error('JSON ?? ?? ??? ?? ?????.');
+  }
+
+  return repaired;
+}
+
+function tryParseLooseObject(text: string): unknown | null {
+  try {
+    return Function(`"use strict"; return (${text});`)();
+  } catch {
+    return null;
+  }
+}
+
+function extractJsonObject(text: string): string | null {
+  const fencedMatch = text.match(/```json\s*([\s\S]*?)```/i);
+  if (fencedMatch) return fencedMatch[1].trim();
+
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return null;
+  return text.slice(firstBrace, lastBrace + 1);
 }
 
 const TOOL_LABELS: Record<string, string> = {

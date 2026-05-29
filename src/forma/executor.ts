@@ -21,6 +21,36 @@ import {
 function normalizeRequirements(raw: Record<string, any>): BuildingRequirements {
   const DEFAULT_POSITIONS = ['center', 'northeast', 'southwest', 'southeast', 'northwest', 'north', 'south'];
 
+  const normalizeRoom = (room: any) => ({
+    name: String(room?.name ?? room?.room_name ?? room?.label ?? '기타'),
+    area_m2: Number(room?.area_m2 ?? room?.area ?? room?.size ?? 0),
+    ...(room?.function_id ? { function_id: String(room.function_id) } : {}),
+    ...(room?.unit_type ? { unit_type: room.unit_type } : {}),
+  });
+
+  const normalizeFloorPlans = (value: any): Record<string, any[]> => {
+    if (!value || typeof value !== 'object') return {};
+
+    return Object.fromEntries(
+      Object.entries(value).map(([floor, rooms]) => {
+        if (Array.isArray(rooms)) {
+          return [floor, rooms.map(normalizeRoom)];
+        }
+
+        if (rooms && typeof rooms === 'object') {
+          const nestedArray = Object.values(rooms).find((entry) => Array.isArray(entry));
+          if (Array.isArray(nestedArray)) {
+            return [floor, nestedArray.map(normalizeRoom)];
+          }
+
+          return [floor, Object.values(rooms).map(normalizeRoom)];
+        }
+
+        return [floor, []];
+      }),
+    );
+  };
+
   const buildings = ((raw.buildings ?? []) as any[]).map((b, i) => {
     const floors = b.target_floors ?? 3;
     const floorArea = b.target_floor_area ?? 1000;
@@ -35,11 +65,12 @@ function normalizeRequirements(raw: Record<string, any>): BuildingRequirements {
       position_hint: b.position_hint ?? DEFAULT_POSITIONS[i % DEFAULT_POSITIONS.length],
       floor_breakdown: b.floor_breakdown ?? {},
       floor_heights_m: b.floor_heights_m ?? b.floor_heights ?? {},
-      floor_plans: b.floor_plans ?? {},
+      floor_plans: normalizeFloorPlans(b.floor_plans),
       floor_layout_types: b.floor_layout_types ?? {},
       ...(b.basement ? {
         basement: {
           ...b.basement,
+          floor_plans: normalizeFloorPlans(b.basement.floor_plans),
           floor_layout_types: b.basement.floor_layout_types ?? {},
         },
       } : {}),

@@ -43,6 +43,12 @@ body {
   gap: 8px;
 }
 
+.chat-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .chat-header-icon {
   color: #7b8cde;
   font-size: 16px;
@@ -68,6 +74,76 @@ body {
 .clear-btn:hover {
   color: #ccc;
   border-color: #666;
+}
+
+.api-key-panel {
+  padding: 14px 12px;
+  background: #20252f;
+  border-bottom: 1px solid #313847;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.api-key-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e6ebf5;
+}
+
+.api-key-subtitle {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #99a4b8;
+}
+
+.api-key-input {
+  width: 100%;
+  background: #171b23;
+  border: 1px solid #394256;
+  border-radius: 8px;
+  color: #f1f4fb;
+  padding: 10px 12px;
+  font-size: 12px;
+  outline: none;
+}
+
+.api-key-input:focus {
+  border-color: #6885d6;
+}
+
+.api-key-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.api-key-btn {
+  background: #2c3443;
+  border: 1px solid #42506a;
+  border-radius: 8px;
+  color: #d8e1f3;
+  cursor: pointer;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.api-key-btn.primary {
+  background: #3a4f8a;
+  border-color: #5a79cf;
+  color: #fff;
+}
+
+.api-key-btn.danger {
+  background: #4a2b31;
+  border-color: #78424c;
+  color: #ffd7dc;
+}
+
+.api-key-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* ─── 메시지 컨테이너 ────────────────────────────── */
