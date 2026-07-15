@@ -1,25 +1,25 @@
-import type Anthropic from '@anthropic-ai/sdk';
+﻿import type Anthropic from '@anthropic-ai/sdk';
 
 /**
- * Claude에게 노출할 Forma API 도구 목록.
- * Claude는 사용자 질문을 분석하고 이 도구들 중 적절한 것을 골라 호출 요청을 반환합니다.
+ * Forma API tools exposed to Claude.
+ * Claude chooses the appropriate tool based on the user's request and returns a tool-use request.
  */
 export const FORMA_TOOLS: Anthropic.Tool[] = [
   {
     name: 'get_elements_by_category',
-    description: `Forma 프로젝트에서 특정 카테고리의 요소 경로 목록을 가져옵니다.
-사용 가능한 카테고리:
-- "building": 건물 (건축물 전체)
-- "terrain": 지형 (대지, 토지)
-- "generic": 일반 요소
-- "road": 도로
-반환값: 요소 경로 배열과 개수`,
+    description: `Get element paths from the current Forma project by category.
+Available categories:
+- "building": building elements
+- "terrain": terrain/site geometry
+- "generic": generic proposal elements
+- "road": road elements
+Returns an array of element paths and a count.`,
     input_schema: {
       type: 'object',
       properties: {
         category: {
           type: 'string',
-          description: '요소 카테고리',
+          description: 'Element category to query.',
           enum: ['building', 'terrain', 'generic', 'road'],
         },
       },
@@ -29,15 +29,15 @@ export const FORMA_TOOLS: Anthropic.Tool[] = [
 
   {
     name: 'get_element_mesh_info',
-    description: `특정 요소의 3D 메쉬 정보(삼각형 수, 표면적)를 가져옵니다.
-면적, 부피 등 수치 분석에 사용됩니다.
-반환값: { triangleCount, surfaceArea_m2 }`,
+    description: `Get 3D triangle mesh information for one Forma element.
+Use this for surface-area and geometry analysis.
+Returns { triangleCount, surfaceArea_m2 }.`,
     input_schema: {
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'get_elements_by_category에서 얻은 요소 경로',
+          description: 'Element path returned by get_elements_by_category or get_current_selection.',
         },
       },
       required: ['path'],
@@ -46,16 +46,16 @@ export const FORMA_TOOLS: Anthropic.Tool[] = [
 
   {
     name: 'get_multiple_elements_mesh_info',
-    description: `여러 요소의 메쉬 정보를 한꺼번에 가져옵니다.
-단일 카테고리 전체 면적 합산 시 사용하면 효율적입니다.
-반환값: 각 요소의 { path, surfaceArea_m2 } 배열과 totalArea_m2 합계`,
+    description: `Get mesh area information for multiple Forma elements in one call.
+Use this when summing the total surface area of many elements.
+Returns per-element { path, surfaceArea_m2 } and totalArea_m2.`,
     input_schema: {
       type: 'object',
       properties: {
         paths: {
           type: 'array',
           items: { type: 'string' },
-          description: '요소 경로 배열',
+          description: 'Array of element paths.',
         },
       },
       required: ['paths'],
@@ -64,9 +64,9 @@ export const FORMA_TOOLS: Anthropic.Tool[] = [
 
   {
     name: 'get_current_selection',
-    description: `사용자가 Forma 3D 뷰어에서 현재 선택한 요소들의 경로를 가져옵니다.
-"선택한 요소" 또는 "지금 선택된 것"에 대한 질문에 사용합니다.
-반환값: 선택된 경로 배열과 개수, 그리고 각 path가 site_limit/terrain/building/road/generic 중 어디에 속하는지 판별 결과(classified)`,
+    description: `Get paths for the elements currently selected in the Forma 3D viewer.
+Use this for questions such as "the selected element" or "what I selected now".
+Returns selected paths, count, and category classification for each path.`,
     input_schema: {
       type: 'object',
       properties: {},
@@ -75,20 +75,20 @@ export const FORMA_TOOLS: Anthropic.Tool[] = [
 
   {
     name: 'highlight_elements',
-    description: `지정한 요소들을 Forma 3D 뷰어에서 색상으로 강조 표시합니다.
-분석 결과 요소를 시각적으로 확인할 때 사용합니다.
-색상 옵션: "yellow"(노란색, 기본), "red"(빨간색), "green"(초록색), "blue"(파란색)`,
+    description: `Highlight the specified Forma elements in the 3D viewer.
+Use this to visually confirm selected or analyzed elements.
+Color options: "yellow" (default), "red", "green", "blue".`,
     input_schema: {
       type: 'object',
       properties: {
         paths: {
           type: 'array',
           items: { type: 'string' },
-          description: '강조할 요소 경로 배열',
+          description: 'Array of element paths to highlight.',
         },
         color: {
           type: 'string',
-          description: '강조 색상',
+          description: 'Highlight color.',
           enum: ['yellow', 'red', 'green', 'blue'],
         },
       },
@@ -98,7 +98,7 @@ export const FORMA_TOOLS: Anthropic.Tool[] = [
 
   {
     name: 'clear_highlights',
-    description: `Forma 3D 뷰어의 모든 강조 표시를 제거하고 원래 색상으로 복원합니다.`,
+    description: `Clear all highlight overlays in the Forma 3D viewer and restore the original display.`,
     input_schema: {
       type: 'object',
       properties: {},
@@ -117,18 +117,144 @@ The tool first tries two adjacent units with shared vertices, then simpler singl
   },
 
   {
+    name: 'test_minimal_floorplan_recreation',
+    description: `Create a very small FloorStack recreation test using only the first available floor and up to three rooms from the provided requirements.
+Use this to diagnose whether the project can save any PDF-derived room plan at all before trying the full building recreation.
+It does not delete existing buildings.` ,
+    input_schema: {
+      type: 'object',
+      properties: {
+        requirements: {
+          type: 'object',
+          description: 'Building requirements containing at least one building with floor_plans or basement.floor_plans.',
+        },
+      },
+      required: ['requirements'],
+    },
+  },
+
+  {
+    name: 'test_floor_plan_unit_compatibility',
+    description: `Diagnose exactly where a PDF-derived FloorStack room plan starts failing for one floor, usually 1F.
+It tests: single unit, core + other, incremental room counts, and the full floor.
+Use this instead of repeatedly running full building recreation when detailed floor plans are being replaced by single-unit fallbacks.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        requirements: {
+          type: 'object',
+          description: 'Building requirements containing at least one building with floor_plans.',
+        },
+        floor_label: {
+          type: 'string',
+          description: 'Floor label to diagnose, for example 1F, 2F, or B1. Defaults to 1F.',
+        },
+      },
+      required: ['requirements'],
+    },
+  },
+
+  {
+    name: 'test_generic_room_program_compatibility',
+    description: `Create a tiny one-room FloorStack test and try several program values to find which program is accepted for a generic non-core room in the current Forma project.
+Use this when basement/core rooms succeed but ordinary rooms still fail during full floor plan recreation.`,
+    input_schema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+
+  {
+    name: 'test_circular_floorstack_mass',
+    description: `Create a minimal one-floor solid circular FloorStack mass at the site center to test whether this Forma project accepts a simple circular polygon footprint.
+This tool does not create an atrium void, room units, or floor plans. It only tests a saved FloorStack mass using progressively simpler polygons such as 24-gon and 16-gon.`,
+    input_schema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+
+  {
+    name: 'test_ring_atrium_floorstack_mass',
+    description: `Create a minimal one-floor ring atrium FloorStack mass to test whether this Forma project accepts a center void represented by sector units around an empty middle.
+This tool does not use PDF parsing or detailed room plans. It only tests whether a simple ring-shaped atrium mass can be saved.`,
+    input_schema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+
+  {
+    name: 'prepare_zone_import_package',
+    description: `Validate a pasted levels/zones JSON schema and prepare a normalized Zone import package.
+Use this when the user already has exact room polygons and wants to preserve them as the source of truth, even if FloorStack plans.units creation fails.
+Return the normalized JSON, a count of levels/zones, consistent core information, and a mass-shell requirements summary that can still be used for mass generation.`,
+    input_schema: {
+      type: 'object',
+      properties: {
+        site_id: { type: 'string' },
+        project_name: { type: 'string' },
+        coordinate_system: { type: 'string' },
+        levels: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              level: { type: 'number' },
+              elevation_m: { type: 'number' },
+              floor_name: { type: 'string' },
+              zones: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    zone_id: { type: 'string' },
+                    name: { type: 'string' },
+                    polygon: {
+                      type: 'array',
+                      items: {
+                        type: 'array',
+                        items: { type: 'number' },
+                        minItems: 2,
+                        maxItems: 2,
+                      },
+                    },
+                    area_m2: { type: 'number' },
+                    use_type: { type: 'string' },
+                    color: { type: 'string' },
+                    height_m: { type: 'number' },
+                    is_consistent_across_floors: { type: 'boolean' },
+                  },
+                  required: ['zone_id', 'name', 'polygon', 'area_m2'],
+                },
+              },
+            },
+            required: ['level', 'zones'],
+          },
+        },
+      },
+      required: ['levels'],
+    },
+  },
+
+  {
     name: 'recreate_buildings_with_floor_plans',
-    description: `Create new FloorStack buildings with real FloorStack plans.units from PDF-derived room schedules.
-This is the Autodesk-recommended workflow when existing plans cannot be edited through the API: re-create a new building with updated floor plans.
+    description: `Regenerate the selected/existing building mass as a new FloorStack and include PDF-derived floor_plans as FloorStack plans.units during creation.
+Use this when the user wants room layout to be part of the actual generated mass, not a render.geojson or generic line overlay. The existing mass is used as the envelope/placement reference. Create and confirm the new FloorStack building first, then remove the previous mass.
+If the selected existing mass is a Basic Building without gross-floor polygons, provide a polygon for every positive-area room on every floor. Those source-authored polygons become the geometry authority for the new FloorStack; do not estimate them from a total area.
+It requires an existing mass from the mass generation workflow or one selected Buildings layer mass; if no target mass exists, report failure and ask the user to run mass generation first.
 
   Important:
-  - Do not delete or replace the existing building in this tool.
+  - Do not count render.geojson or generic proposal line overlays as successful room layout.
+  - Build a new FloorStack with floors and plans in the same createFromFloors request.
+  - Keep the existing mass until the new FloorStack is confirmed as a readable Buildings layer element.
+  - Preserve the existing mass envelope and placement as closely as possible when regenerating.
   - Extract room layouts into requirements.buildings[].floor_plans and requirements.buildings[].basement.floor_plans.
-  - If the PDF mentions ㄱ자형, L-shape, or an L-shaped arrangement, extract it into floor_layout_types for the relevant floors using L_SHAPE.
-  - Preserve each PDF room as a separate unit. Do not merge a floor's rooms into one unit unless every multi-unit attempt fails.
-- Each room must include name and area_m2. Add unit_type only when confident: CORE, CORRIDOR, LIVING_UNIT, PARKING.
-- The tool will try multiple compatibility variants: program+functionId, program only, all LIVING_UNIT, polygon units only.
-- Report which variant succeeded or failed.`,
+  - If the PDF mentions an L-shape, ㄱ-shape, or an L-shaped arrangement, extract it into floor_layout_types for the relevant floors using L_SHAPE.
+  - Preserve each PDF room as a separate FloorStack unit when possible.
+- Each room must include name. Include area_m2 only when the PDF explicitly gives that room area. Add unit_type only when confident: CORE, CORRIDOR, LIVING_UNIT, PARKING.
+- If room area_m2 is missing or marked inferred/estimated/AI 추론, omit that room from floor_plans instead of assigning an area.
+- Report the new FloorStack path, plan unit count, any simplification, and whether the previous mass was removed after confirmation.`,
     input_schema: {
       type: 'object',
       properties: {
@@ -150,7 +276,35 @@ This is the Autodesk-recommended workflow when existing plans cannot be edited t
                   footprint_area: { type: 'number' },
                   mass_layout_type: {
                     type: 'string',
-                    enum: ['AUTO', 'RECTANGLE', 'COURTYARD_U'],
+                    enum: ['AUTO', 'RECTANGLE', 'COURTYARD_U', 'COURTYARD_O', 'CIRCULAR', 'RING_ATRIUM'],
+                  },
+                  base_offset_m: {
+                    type: 'number',
+                    description: 'Podium 상부처럼 지면보다 높은 기준면에서 시작해야 하는 매스의 높이 오프셋(m).',
+                  },
+                  core_template: {
+                    type: 'object',
+                    description: '층별로 동일하게 유지할 코어 템플릿. width/depth/position을 지정하면 코어를 먼저 고정하고 나머지 실을 배치합니다.',
+                    properties: {
+                      width_m: { type: 'number' },
+                      depth_m: { type: 'number' },
+                      position: {
+                        type: 'string',
+                        enum: ['center', 'west', 'east', 'north', 'south', 'northwest', 'northeast', 'southwest', 'southeast'],
+                      },
+                      fixed_across_floors: { type: 'boolean' },
+                      applicable_floors: {
+                        type: 'array',
+                        items: { type: 'string' },
+                      },
+                      center_x_m: { type: 'number' },
+                      center_y_m: { type: 'number' },
+                      offset_x_m: { type: 'number' },
+                      offset_y_m: { type: 'number' },
+                      room_name: { type: 'string' },
+                      function_id: { type: 'string' },
+                    },
+                    required: ['width_m', 'depth_m', 'position'],
                   },
                   floor_breakdown: {
                     type: 'object',
@@ -176,13 +330,18 @@ This is the Autodesk-recommended workflow when existing plans cannot be edited t
                         properties: {
                           name: { type: 'string' },
                           area_m2: { type: 'number' },
+                          polygon: {
+                            type: 'array',
+                            description: 'Authoritative room outline in local metres. Include every positive-area room on the floor when replacing a Basic Building without GFA polygons.',
+                            items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+                          },
                           function_id: { type: 'string' },
                           unit_type: {
                             type: 'string',
                             enum: ['CORE', 'CORRIDOR', 'LIVING_UNIT', 'PARKING'],
                           },
                         },
-                        required: ['name', 'area_m2'],
+                        required: ['name'],
                       },
                     },
                   },
@@ -196,6 +355,29 @@ This is the Autodesk-recommended workflow when existing plans cannot be edited t
                         type: 'object',
                         additionalProperties: { type: 'number' },
                       },
+                        core_template: {
+                          type: 'object',
+                          properties: {
+                            width_m: { type: 'number' },
+                            depth_m: { type: 'number' },
+                            position: {
+                              type: 'string',
+                              enum: ['center', 'west', 'east', 'north', 'south', 'northwest', 'northeast', 'southwest', 'southeast'],
+                            },
+                            fixed_across_floors: { type: 'boolean' },
+                            applicable_floors: {
+                              type: 'array',
+                              items: { type: 'string' },
+                            },
+                            center_x_m: { type: 'number' },
+                            center_y_m: { type: 'number' },
+                            offset_x_m: { type: 'number' },
+                            offset_y_m: { type: 'number' },
+                            room_name: { type: 'string' },
+                            function_id: { type: 'string' },
+                          },
+                          required: ['width_m', 'depth_m', 'position'],
+                        },
                         floor_heights_m: {
                           type: 'object',
                           additionalProperties: { type: 'number' },
@@ -216,13 +398,18 @@ This is the Autodesk-recommended workflow when existing plans cannot be edited t
                             properties: {
                               name: { type: 'string' },
                               area_m2: { type: 'number' },
+                              polygon: {
+                                type: 'array',
+                                description: 'Authoritative room outline in local metres. Include every positive-area room on the floor when replacing a Basic Building without GFA polygons.',
+                                items: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+                              },
                               function_id: { type: 'string' },
                               unit_type: {
                                 type: 'string',
                                 enum: ['CORE', 'CORRIDOR', 'LIVING_UNIT', 'PARKING'],
                               },
                             },
-                            required: ['name', 'area_m2'],
+                            required: ['name'],
                           },
                         },
                       },
@@ -246,102 +433,99 @@ This is the Autodesk-recommended workflow when existing plans cannot be edited t
 
   {
     name: 'place_building_masses',
-    description: `건축 기획 파라미터를 기반으로 Forma 3D 뷰어에 건물 매스(Mass)를 배치합니다.
+    description: `Create actual Forma Buildings layer mass elements from building planning requirements.
+This tool must create real FloorStack/proposal building elements. Temporary render.geojson overlays are not counted as generated buildings and should not be treated as success.
 
-동작 방식:
-1. Forma 대지(site_limit / terrain)에서 좌표계를 자동으로 파악
-2. 각 동의 position_hint → 대지 내 실제 좌표 변환
-3. footprint_area(바닥면적) → 직사각형 GeoJSON Polygon 생성
-4. floor_breakdown / floor_heights_m가 있으면 층별 면적과 층고를 그대로 적용
-5. basement.floor_breakdown / basement.floor_heights_m가 있으면 지하층을 기준 레벨 아래로 생성
-6. Forma.render.geojson으로 뷰어에 즉시 표시 (임시 시각화)
-
-requirements 파라미터:
-- 사용자가 PDF를 첨부한 경우: 문서에서 추출한 건물 데이터를 이 파라미터로 제공하세요.
-- 생략 시: 사전 내장된 경주시 복합문화도서관 데이터를 사용합니다.
-
-반환값: 배치된 각 동의 좌표, 치수, geojsonId, 건폐율 요약`,
+Important:
+- Use requirements extracted from the attached PDF when available.
+- Preserve floor_breakdown, floor_heights_m, basement data, and mass_layout_type.
+- If actual Buildings layer creation fails, report failure instead of claiming that a building was generated.
+- Do not use this tool to regenerate embedded room plans; use recreate_buildings_with_floor_plans only after a real mass exists.`,
     input_schema: {
       type: 'object',
       properties: {
         project_name: {
           type: 'string',
-          description: '배치할 프로젝트 이름. requirements를 직접 제공할 경우 생략 가능.',
+          description: 'Project name for placement. Optional when requirements are provided directly.',
+        },
+        target_path: {
+          type: 'string',
+          description: 'Optional Forma element path to use as the placement constraint. Pass the path returned by get_current_selection when the user selected a specific Constraint or Site Limit.',
         },
         floor_height_m: {
           type: 'number',
-          description: '층당 높이(m). 기본값 4.0m (공공건물 기준). 변경 가능.',
+          description: 'Default floor height in meters. Defaults to 4.0m when floor-specific heights are absent.',
         },
         requirements: {
           type: 'object',
-          description: `PDF/문서에서 추출한 건축 기획 파라미터. 제공 시 이 데이터로 매스를 배치합니다.
-PDF가 첨부된 경우에는 반드시 이 파라미터를 채워서 제공하세요.`,
+          description: `Building planning parameters extracted from a PDF or document.
+When a PDF is attached, fill this object with the extracted planning values before placing masses.`,
           properties: {
             project_name: {
               type: 'string',
-              description: '프로젝트 이름 (예: "경주시 복합문화도서관")',
+              description: 'Project name.',
             },
             location: {
               type: 'string',
-              description: '프로젝트 위치 (예: "경상북도 경주시")',
+              description: 'Project location.',
             },
             site_limits: {
               type: 'object',
-              description: '대지 제약 조건',
+              description: 'Site limit and planning constraints.',
               properties: {
                 total_site_area: {
                   type: 'number',
-                  description: '전체 대지 면적 (m²)',
+                  description: 'Total site area in square meters.',
                 },
                 max_building_coverage_ratio: {
                   type: 'number',
-                  description: '최대 건폐율 소수점 형태 (예: 건폐율 20% → 0.2)',
+                  description: 'Maximum building coverage ratio, for example 0.2 for 20%.',
                 },
                 max_floor_area_ratio: {
                   type: 'number',
-                  description: '최대 용적률 소수점 형태 (예: 용적률 100% → 1.0)',
+                  description: 'Maximum floor area ratio, for example 1.0 for 100%.',
                 },
                 max_height_floors: {
                   type: 'number',
-                  description: '지상 최대 층수 제한',
+                  description: 'Maximum allowed above-grade floor count.',
                 },
               },
             },
             buildings: {
               type: 'array',
-              description: '각 동/건물 배치 계획 배열',
+              description: 'Array of building mass placement plans.',
               items: {
                 type: 'object',
                 properties: {
                   name: {
                     type: 'string',
-                    description: '동/건물 이름 (예: "A동 융합허브", "도서관동")',
+                    description: 'Building name.',
                   },
                   target_floor_area: {
                     type: 'number',
-                    description: '목표 연면적 (m²)',
+                    description: 'Target total floor area in square meters.',
                   },
                   target_floors: {
                     type: 'number',
-                    description: '계획 층수 (지상)',
+                    description: 'Planned above-grade floor count.',
                   },
                   footprint_area: {
                     type: 'number',
-                    description: '1층 바닥면적(건축면적) (m²). 없으면 target_floor_area ÷ target_floors로 자동 계산',
+                    description: 'Ground-floor footprint area in square meters. If absent, it is derived from target_floor_area / target_floors.',
                   },
                   floor_breakdown: {
                     type: 'object',
-                    description: '층별 면적(m²). 문서에 층별 면적이 있으면 반드시 입력하세요. 예: {"1F":500,"2F":742,"3F":742}',
+                    description: 'Floor-by-floor area in square meters. Preserve explicit document values, for example {"1F":500,"2F":742,"3F":742}.',
                     additionalProperties: { type: 'number' },
                   },
                   floor_heights_m: {
                     type: 'object',
-                    description: '층별 층고(m). 문서에 층별 층고가 있으면 평균값으로 합치지 말고 반드시 층별로 입력하세요. 예: {"1F":5.0,"2F":7.0,"4F":8.0}',
+                    description: 'Floor-by-floor height in meters. Preserve explicit document values instead of averaging them.',
                     additionalProperties: { type: 'number' },
                   },
                   basement: {
                     type: 'object',
-                    description: '지하층 정보. 지하층이 있으면 지상층에 합치지 말고 이 객체에 별도로 입력하세요.',
+                    description: 'Basement information. Keep basement floors separate from above-grade floors.',
                     properties: {
                       floors: {
                         type: 'number',
@@ -349,27 +533,27 @@ PDF가 첨부된 경우에는 반드시 이 파라미터를 채워서 제공하�
                       },
                       area_m2: {
                         type: 'number',
-                        description: '지하층 전체 면적 합계(m²)',
+                        description: 'Total basement area in square meters.',
                       },
                       use: {
                         type: 'string',
-                        description: '지하층 주요 용도',
+                        description: 'Primary basement use.',
                       },
                       floor_breakdown: {
                         type: 'object',
-                        description: '지하 층별 면적(m²). 예: {"B4":990,"B3":990,"B2":990,"B1":990}',
+                        description: 'Basement floor-by-floor area in square meters, for example {"B4":990,"B3":990,"B2":990,"B1":990}.',
                         additionalProperties: { type: 'number' },
                       },
                       floor_heights_m: {
                         type: 'object',
-                        description: '지하 층별 층고(m). 예: {"B4":8.0,"B3":8.0,"B2":8.0,"B1":3.5}',
+                        description: 'Basement floor-by-floor height in meters, for example {"B4":8.0,"B3":8.0,"B2":8.0,"B1":3.5}.',
                         additionalProperties: { type: 'number' },
                       },
                     },
                   },
                   position_hint: {
                     type: 'string',
-                    description: '대지 내 배치 위치. 문서의 배치 계획·평면도 설명에서 유추하세요.',
+                    description: 'Preferred placement within the site. Infer from the document only when stated.',
                     enum: ['center', 'north', 'south', 'east', 'west', 'northeast', 'northwest', 'southeast', 'southwest'],
                   },
                 },
@@ -385,7 +569,7 @@ PDF가 첨부된 경우에는 반드시 이 파라미터를 채워서 제공하�
                 },
                 location_hint: {
                   type: 'string',
-                  description: '주차 위치 (예: "underground", "rear", "underground_or_rear")',
+                  description: 'Parking location hint, for example "underground", "rear", or "underground_or_rear".',
                 },
               },
             },
@@ -398,8 +582,7 @@ PDF가 첨부된 경우에는 반드시 이 파라미터를 채워서 제공하�
 
   {
     name: 'clear_building_masses',
-    description: `Forma 3D 뷰어에 배치된 모든 건물 매스 시각화를 제거합니다.
-place_building_masses로 추가한 GeoJSON 렌더링을 모두 삭제합니다.`,
+    description: `Remove all building masses and temporary mass artifacts created by this extension from the Forma proposal/viewer.`,
     input_schema: {
       type: 'object',
       properties: {},
@@ -408,30 +591,28 @@ place_building_masses로 추가한 GeoJSON 렌더링을 모두 삭제합니다.`
 
   {
     name: 'parse_building_requirements',
-    description: `건축 기획 문서(보고서)에서 절차적 매스 생성(Procedural Mass Generation)에 필요한
-기하학적 파라미터를 추출하여 구조화된 JSON으로 반환합니다.
+    description: `Extract structured building planning requirements from a report, PDF text, or user-provided description.
+Use this before procedural mass generation when the user has supplied unstructured planning text.
 
-반환 데이터:
-- site_limits: 대지 제약 조건 (면적, 건폐율, 용적률, 최대 층수)
-- buildings: 동별 배치 계획 (이름, 연면적, 층수, 바닥면적, 배치 위치)
-- parking: 주차 요구사항
-- derived_metrics: 실제 건폐율/용적률 등 파생 수치
+Returned data includes:
+- site_limits: site constraints such as area, coverage ratio, FAR, and max floors
+- buildings: individual building plans such as name, area, floors, footprint, and position
+- parking: parking requirements
+- derived_metrics: generated planning metrics
 
-이 데이터를 기반으로 Forma 캔버스에 3D 매스를 배치할 수 있습니다.
-
-사용 방법:
-- 사용자가 PDF/TXT를 첨부한 경우: raw_text에 문서 전체 텍스트를 전달하세요.
-- 특정 프로젝트 이름으로 조회할 때: project_name을 전달하세요.`,
+Usage:
+- When the user attached a PDF/TXT, pass the extracted full text as raw_text.
+- When querying by project name, pass project_name.`,
     input_schema: {
       type: 'object',
       properties: {
         project_name: {
           type: 'string',
-          description: '조회할 프로젝트 이름 (예: "경주시 복합문화도서관"). 생략 시 현재 로드된 프로젝트 데이터를 반환합니다.',
+          description: 'Project name to look up. Optional; if omitted, the current/default project data may be used.',
         },
         raw_text: {
           type: 'string',
-          description: 'PDF/TXT에서 추출한 문서 전체 텍스트. 제공 시 이 텍스트를 기반으로 requirements를 파싱합니다.',
+          description: 'Full text extracted from a PDF/TXT document. Requirements are parsed from this text when provided.',
         },
       },
     },
@@ -439,12 +620,10 @@ place_building_masses로 추가한 GeoJSON 렌더링을 모두 삭제합니다.`
 
   {
     name: 'debug_site_bounds',
-    description: `Forma 프로젝트에서 Site Limits(대지 경계) 요소를 진단합니다.
-모든 카테고리(site_limit, terrain, generic, building, road)를 순서대로 조회하고
-각 요소의 path, footprint 좌표, 삼각형 기반 바운딩 박스를 반환합니다.
+    description: `Diagnose Site Limits and placement bounds in the current Forma project.
+It queries site_limit, terrain, generic, building, and road categories and returns path, footprint coordinates, and triangle-based bounding boxes when available.
 
-매스 배치가 원점 기준으로 잘못 배치될 때 이 도구로 원인을 파악하세요.
-반환값: 카테고리별 조회 결과 (path 목록, footprint 좌표, bbox)`,
+Use this when mass placement seems offset or falls back to the origin because site bounds were not found.`,
     input_schema: {
       type: 'object',
       properties: {},

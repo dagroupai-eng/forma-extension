@@ -15,23 +15,92 @@ export interface FloorHeights {
 }
 
 export type LayoutType = 'AUTO' | 'ROW_LAYOUT' | 'EDGE_STRIP' | 'L_SHAPE';
-export type MassLayoutType = 'AUTO' | 'RECTANGLE' | 'COURTYARD_U';
+export type MassLayoutType = 'AUTO' | 'RECTANGLE' | 'COURTYARD_U' | 'COURTYARD_O' | 'CIRCULAR' | 'RING_ATRIUM';
+export type ShapePreference = 'RECTANGLE' | 'L_SHAPE' | 'U_SHAPE' | 'COMPACT_RECTANGLE' | 'LONG_RECTANGLE_AVOID' | 'CORE';
+export type CorePosition =
+  | 'center'
+  | 'west'
+  | 'east'
+  | 'north'
+  | 'south'
+  | 'northwest'
+  | 'northeast'
+  | 'southwest'
+  | 'southeast';
+
+export interface CoreTemplate {
+  width_m: number;
+  depth_m: number;
+  position: CorePosition;
+  fixed_across_floors?: boolean;
+  applicable_floors?: string[];
+  center_x_m?: number;
+  center_y_m?: number;
+  offset_x_m?: number;
+  offset_y_m?: number;
+  room_name?: string;
+  function_id?: string;
+}
 
 export interface BasementInfo {
   floors: number;
   area_m2: number;
   use: string;
+  /** 지하 footprint 가로(m). 제공 시 지상 footprint와 별도로 B1 배치에 사용 */
+  footprint_width_m?: number;
+  /** 지하 footprint 세로(m). 제공 시 지상 footprint와 별도로 B1 배치에 사용 */
+  footprint_depth_m?: number;
   floor_breakdown?: FloorBreakdown;
   floor_heights_m?: FloorHeights;
   floor_plans?: Record<string, RoomLayout[]>;
   floor_layout_types?: Record<string, LayoutType>;
+  floor_layout_intents?: Record<string, any>;
+  core_template?: CoreTemplate | CoreTemplate[];
 }
 
 export interface RoomLayout {
   name: string;
+  /** dAI+ 실 고유 ID (예: F01_L01, F03_R02) */
+  room_id?: string;
   area_m2: number;
+  /** 허용 최소 면적. 생략하면 목표 면적과 같게 정규화한다. */
+  min_area_m2?: number;
+  /** 허용 최대 면적. 생략하면 목표 면적과 같게 정규화한다. */
+  max_area_m2?: number;
   function_id?: string;
   unit_type?: 'CORE' | 'CORRIDOR' | 'LIVING_UNIT' | 'PARKING';
+  polygon?: [number, number][];
+  /** 명시된 polygon을 사용자 고정 배치로 취급할지 여부. */
+  locked?: boolean;
+  /** 기능 그룹 (Research / Collaboration / Business / Admin / Support / Infra) */
+  group?: string;
+  /** 외피(파사드) 접면 필수 여부 — 자연채광 필요실 */
+  facade_required?: boolean;
+  /** 코어 근접도 요구사항 */
+  core_proximity?: 'required' | 'preferred' | 'neutral';
+  /** 자연채광 우선순위 */
+  daylight_priority?: 'high' | 'medium' | 'low';
+  /** 소음 수준 */
+  noise_level?: 'low' | 'medium' | 'medium-high' | 'high';
+  /** 인접 필수 실 ID 목록 */
+  required_adjacency?: string[];
+  /** 인접 회피 실 ID 목록 */
+  avoid_adjacency?: string[];
+  /** dAI+ 배치 설명 */
+  placement_hint?: string;
+  /** north/south/perimeter/core_adjacent 등 배치 구역 힌트 */
+  zone_hint?: string;
+  /** 외피/코어/방위 우선 힌트 */
+  edge_preference?: string;
+  /** 실 형태 선호도 */
+  shape_preference?: ShapePreference;
+  /** 권장 장단변비 */
+  aspect_ratio_preference?: {
+    min?: number;
+    max?: number;
+  };
+  /** 일반 인접 힌트 */
+  adjacent_to?: string[];
 }
 
 export interface BuildingMass {
@@ -39,12 +108,19 @@ export interface BuildingMass {
   target_floor_area: number;
   target_floors: number;
   footprint_area: number;
+  /** footprint 가로 치수(m). 제공 시 Extension이 polygon 좌표를 자동 생성한다. */
+  footprint_width_m?: number;
+  /** footprint 세로 치수(m). 제공 시 Extension이 polygon 좌표를 자동 생성한다. */
+  footprint_depth_m?: number;
   mass_layout_type?: MassLayoutType;
+  base_offset_m?: number;
+  core_template?: CoreTemplate | CoreTemplate[];
   position_hint: 'center' | 'northeast' | 'northwest' | 'southeast' | 'southwest' | string;
   floor_breakdown: FloorBreakdown;
   floor_heights_m?: FloorHeights;
   floor_plans?: Record<string, RoomLayout[]>;
   floor_layout_types?: Record<string, LayoutType>;
+  floor_layout_intents?: Record<string, any>;
   basement?: BasementInfo;
 }
 
@@ -199,9 +275,15 @@ export function parseRequirementsFromText(rawText: string): BuildingRequirements
       ? 'L_SHAPE'
       : 'AUTO';
   const globalMassLayoutType: MassLayoutType =
-    rawText.includes('\u3137') || /courtyard|u[\s-]?shape|u[\s-]?type/i.test(rawText)
-      ? 'COURTYARD_U'
-      : 'AUTO';
+    /ring atrium|annular|donut|doughnut|atrium|환형|도넛|원형 아트리움/i.test(rawText)
+      ? 'RING_ATRIUM'
+      : /circular|circle|round|원형/i.test(rawText)
+        ? 'CIRCULAR'
+        : rawText.includes('\u3141') || /o[\s-]?shape|o[\s-]?type|closed courtyard|enclosed courtyard|full courtyard/i.test(rawText)
+          ? 'COURTYARD_O'
+          : rawText.includes('\u3137') || /courtyard|u[\s-]?shape|u[\s-]?type/i.test(rawText)
+            ? 'COURTYARD_U'
+            : 'AUTO';
 
   // 동/건물 정보 파싱 (문서 형식이 다양하므로 "가능한 것만" 추출)
   // 예시 패턴:
