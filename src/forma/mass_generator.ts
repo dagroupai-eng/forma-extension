@@ -42,6 +42,12 @@ const _roomLayoutElementPaths = new Set<string>();
 /** Selected original-mass snapshots retained for the current regeneration session. */
 const _massSnapshots = new Map<string, MassSnapshot>();
 
+import {
+  MassComponentPlanningError,
+  resolvePodiumMultiTowerBasement,
+  resolvePodiumMultiTowerComponents,
+  type ComponentPlacementDiagnostic,
+} from './podium_multi_tower';
 // Constants.
 const DEFAULT_FLOOR_HEIGHT_M = 4.0;
 /** Approximate meters per degree of latitude. */
@@ -4909,6 +4915,12 @@ export interface PlacedMassInfo {
     baseElevation: number;
     localMeshElevation: number | null;
   };
+  componentId?: string;
+  componentType?: string;
+  parentComponentId?: string | null;
+  startFloor?: string;
+  endFloor?: string;
+  belowGrade?: boolean;
 }
 
 export interface PlaceResult {
@@ -6654,6 +6666,7 @@ export async function placeBuildingMasses(
 ): Promise<PlaceResult> {
   const warnings: string[] = [];
   const placed: PlacedMassInfo[] = [];
+  const componentErrors: ComponentPlacementDiagnostic[] = [];
 
   // 0-A. Check edit permission before creating proposal elements.
   let canEdit = false;
@@ -6735,6 +6748,196 @@ export async function placeBuildingMasses(
     const worldOffset = siteLocalOffsetToWorld(ox, oy, siteW, siteH, siteRotationRad);
     const cx = originX + worldOffset.x;
     const cy = originY + worldOffset.y;
+
+    if ((building.mass_components?.length ?? 0) > 0) {
+      let componentPlans;
+      let basementPlan;
+      try {
+        // Resolve the complete component graph and optional basement before
+        // the first SDK write so invalid floor metadata cannot leave a partial mass.
+        componentPlans = resolvePodiumMultiTowerComponents(building, requirements.mass_generation_settings);
+        basementPlan = resolvePodiumMultiTowerBasement(building);
+      } catch (error) {
+        if (error instanceof MassComponentPlanningError) {
+          componentErrors.push(error.diagnostic);
+          warnings.push(`PODIUM_MULTI_TOWER validation failed: ${JSON.stringify(error.diagnostic)}`);
+        } else {
+          warnings.push(`${building.name}: component mass planning failed: ${String(error)}`);
+        }
+        continue;
+      }
+
+      const buildingElevationRef = sourceGeometryElevation
+        ? null
+        : (!isGeo ? await getElevationReferencePath(bounds, cx, cy) : elevationRef);
+      const buildingElevationSourcePath = sourceGeometryElevation
+        ? siteSourcePath
+        : (buildingElevationRef?.path ?? '');
+      const localMeshElevationM = !sourceGeometryElevation && !isGeo && buildingElevationSourcePath
+        ? (await sampleLocalElevationFromMesh(buildingElevationSourcePath, cx, cy)) ?? null
+        : null;
+      const localPlacementZ = localMeshElevationM ?? baseElevation;
+
+      if (!canEdit) {
+        warnings.push(`${building.name}: component geometry passed validation, but no FloorStack was written because the proposal is not editable.`);
+        continue;
+      }
+
+      if (basementPlan) {
+        const basementZ = localPlacementZ + basementPlan.baseElevationM;
+        const basementName = `${building.name} / ${basementPlan.componentId}`;
+        try {
+          const floors = basementPlan.floorHeightsM.map((height, floorIndex) => ({
+            polygon: basementPlan.localFloorStackPolygons[floorIndex],
+            height,
+          }));
+          const { urn } = await Forma.elements.floorStack.createFromFloors({ floors });
+          const { path } = await Forma.proposal.addElement({
+            urn,
+            name: basementName,
+            transform: makePlacementTransform(cx, cy, basementZ, siteRotationRad),
+          });
+          const confirmation = await waitForBuildingLayerElement(path, {
+            x: cx,
+            y: cy,
+            z: basementZ,
+            rotationRad: siteRotationRad,
+            heightM: basementPlan.totalHeightM,
+          });
+          if (!confirmation.confirmed) {
+            const removed = await removeUnconfirmedProposalElement(path);
+            warnings.push(
+              `${basementName}: proposal.addElement returned a path, but confirmation failed: ${describeBuildingConfirmationFailure(confirmation)}. `
+              + `${removed ? 'It was removed' : 'Immediate cleanup failed; it will be retried by clearAllMasses'}.`,
+            );
+            continue;
+          }
+          _unconfirmedElementPaths.delete(path);
+          _elementPaths.add(path);
+          placed.push({
+            name: basementName,
+            geojsonId: path,
+            centerX: cx,
+            centerY: cy,
+            placementZ: basementZ,
+            widthM: basementPlan.widthM,
+            depthM: basementPlan.depthM,
+            heightM: basementPlan.totalHeightM,
+            floors: 0,
+            basementFloors: basementPlan.floorCount,
+            footprintArea: basementPlan.footprintAreaM2,
+            totalFloorArea: basementPlan.totalFloorAreaM2,
+            floorDetails: basementPlan.floorLabels.map((label, floorIndex) =>
+              `${label}: ${basementPlan.floorAreasM2[floorIndex]}m2 / ${basementPlan.floorHeightsM[floorIndex]}m`),
+            roomUnitCount: 0,
+            color: MASS_COLORS[i % MASS_COLORS.length],
+            method: 'building_element',
+            confirmation: {
+              buildingLayer: confirmation.buildingLayer,
+              visibleVolume: confirmation.visibleVolume,
+              worldTransform: confirmation.worldTransform,
+              nonVirtual: confirmation.nonVirtual,
+              actualTransformZ: confirmation.actualTransformZ ?? basementZ,
+            },
+            debug: {
+              siteSourcePath,
+              elevationSourcePath: buildingElevationSourcePath,
+              baseElevation,
+              localMeshElevation: localMeshElevationM,
+            },
+            componentId: basementPlan.componentId,
+            componentType: basementPlan.componentType,
+            parentComponentId: null,
+            startFloor: basementPlan.floorLabels[0],
+            endFloor: basementPlan.floorLabels[basementPlan.floorLabels.length - 1],
+            belowGrade: true,
+          });
+        } catch (error) {
+          warnings.push(`${basementName} FloorStack 생성 실패: ${String(error)}`);
+          continue;
+        }
+      }
+
+      for (const [componentIndex, component] of componentPlans.entries()) {
+        const localOffset = isGeo
+          ? { x: mToLon(component.centerXM, cy), y: mToLat(component.centerYM) }
+          : siteLocalOffsetToWorld(component.centerXM, component.centerYM, 1, 1, siteRotationRad);
+        const componentX = cx + localOffset.x;
+        const componentY = cy + localOffset.y;
+        const componentZ = localPlacementZ + component.baseElevationM;
+        const componentName = `${building.name} / ${component.componentId}`;
+        try {
+          const floors = component.floorHeightsM.map((height) => ({
+            polygon: component.localFloorStackPolygon,
+            height,
+          }));
+          const { urn } = await Forma.elements.floorStack.createFromFloors({ floors });
+          const { path } = await Forma.proposal.addElement({
+            urn,
+            name: componentName,
+            transform: makePlacementTransform(componentX, componentY, componentZ, siteRotationRad),
+          });
+          const confirmation = await waitForBuildingLayerElement(path, {
+            x: componentX,
+            y: componentY,
+            z: componentZ,
+            rotationRad: siteRotationRad,
+            heightM: component.totalHeightM,
+          });
+          if (!confirmation.confirmed) {
+            const removed = await removeUnconfirmedProposalElement(path);
+            warnings.push(
+              `${componentName}: proposal.addElement returned a path, but confirmation failed: ${describeBuildingConfirmationFailure(confirmation)}. `
+              + `${removed ? 'It was removed' : 'Immediate cleanup failed; it will be retried by clearAllMasses'}.`,
+            );
+            continue;
+          }
+          _unconfirmedElementPaths.delete(path);
+          _elementPaths.add(path);
+          placed.push({
+            name: componentName,
+            geojsonId: path,
+            centerX: componentX,
+            centerY: componentY,
+            placementZ: componentZ,
+            widthM: component.widthM,
+            depthM: component.depthM,
+            heightM: component.totalHeightM,
+            floors: component.floorCount,
+            basementFloors: 0,
+            footprintArea: component.requestedAreaM2,
+            totalFloorArea: component.requestedAreaM2 * component.floorCount,
+            floorDetails: component.floorLabels.map((label, floorIndex) =>
+              `${label}: ${component.requestedAreaM2}m2 / ${component.floorHeightsM[floorIndex]}m`),
+            roomUnitCount: 0,
+            color: MASS_COLORS[(i + componentIndex) % MASS_COLORS.length],
+            method: 'building_element',
+            confirmation: {
+              buildingLayer: confirmation.buildingLayer,
+              visibleVolume: confirmation.visibleVolume,
+              worldTransform: confirmation.worldTransform,
+              nonVirtual: confirmation.nonVirtual,
+              actualTransformZ: confirmation.actualTransformZ ?? componentZ,
+            },
+            debug: {
+              siteSourcePath,
+              elevationSourcePath: buildingElevationSourcePath,
+              baseElevation,
+              localMeshElevation: localMeshElevationM,
+            },
+            componentId: component.componentId,
+            componentType: component.componentType,
+            parentComponentId: component.parentComponentId,
+            startFloor: component.startFloor,
+            endFloor: component.endFloor,
+            belowGrade: false,
+          });
+        } catch (error) {
+          warnings.push(`${componentName} FloorStack 생성 실패: ${String(error)}`);
+        }
+      }
+      continue;
+    }
 
     const floorSpecs = buildFloorSpecs(building);
     const aboveGradeSpecs = floorSpecs.filter((floor) => !floor.belowGrade);
@@ -6916,12 +7119,22 @@ export async function placeBuildingMasses(
   }
 
   // 3. Calculate coverage.
-  const totalFootprint = placed.reduce((s, m) => s + m.footprintArea, 0);
+  // Elevated child components do not add ground-level building coverage.
+  const totalFootprint = placed
+    .filter((mass) => mass.parentComponentId == null && mass.belowGrade !== true)
+    .reduce((sum, mass) => sum + mass.footprintArea, 0);
   const declaredSiteArea = Number(requirements.site_limits.total_site_area) || 0;
   const siteArea = declaredSiteArea > 0 ? declaredSiteArea : (bounds?.siteAreaM2 ?? 0);
   const coverageRatio = siteArea > 0 ? parseFloat((totalFootprint / siteArea).toFixed(4)) : 0;
 
-  return { placed, warnings, siteReference, totalFootprint, coverageRatio };
+  return {
+    placed,
+    warnings,
+    siteReference,
+    totalFootprint,
+    coverageRatio,
+    ...(componentErrors.length > 0 ? { componentErrors } : {}),
+  };
 }
 
 /**

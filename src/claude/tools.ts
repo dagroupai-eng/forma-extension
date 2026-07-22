@@ -513,6 +513,33 @@ When a PDF is attached, fill this object with the extracted planning values befo
                     type: 'number',
                     description: 'Ground-floor footprint area in square meters. If absent, it is derived from target_floor_area / target_floors.',
                   },
+                  mass_layout_type: {
+                    type: 'string',
+                    enum: ['AUTO', 'RECTANGLE', 'COURTYARD_U', 'COURTYARD_O', 'CIRCULAR', 'RING_ATRIUM', 'PODIUM_MULTI_TOWER'],
+                  },
+                  mass_components: {
+                    type: 'array',
+                    description: 'Independent FloorStack components. PODIUM and each TOWER are created separately; floor_plans are not used for component mass generation.',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        component_id: { type: 'string' },
+                        component_type: { type: 'string', enum: ['PODIUM', 'TOWER'] },
+                        parent_component_id: { type: ['string', 'null'] },
+                        start_floor: { type: ['string', 'number'] },
+                        end_floor: { type: ['string', 'number'] },
+                        applicable_floors: { type: 'array', items: { type: 'string' } },
+                        footprint_area: { type: 'number' },
+                        footprint_width_m: { type: ['number', 'null'] },
+                        footprint_depth_m: { type: ['number', 'null'] },
+                        center_x_m: { type: ['number', 'null'] },
+                        center_y_m: { type: ['number', 'null'] },
+                        position_hint: { type: 'string', enum: ['center', 'podium_west', 'podium_east'] },
+                        floor_heights_m: { type: 'object', additionalProperties: { type: 'number' } },
+                      },
+                      required: ['component_id', 'component_type', 'footprint_area'],
+                    },
+                  },
                   floor_breakdown: {
                     type: 'object',
                     description: 'Floor-by-floor area in square meters. Preserve explicit document values, for example {"1F":500,"2F":742,"3F":742}.',
@@ -534,6 +561,14 @@ When a PDF is attached, fill this object with the extracted planning values befo
                       area_m2: {
                         type: 'number',
                         description: 'Total basement area in square meters.',
+                      },
+                      footprint_width_m: {
+                        type: 'number',
+                        description: 'Basement footprint width in metres. For multiple floors this defines the preferred aspect ratio and is scaled per declared floor area.',
+                      },
+                      footprint_depth_m: {
+                        type: 'number',
+                        description: 'Basement footprint depth in metres. For multiple floors this defines the preferred aspect ratio and is scaled per declared floor area.',
                       },
                       use: {
                         type: 'string',
@@ -558,6 +593,15 @@ When a PDF is attached, fill this object with the extracted planning values befo
                   },
                 },
                 required: ['name', 'target_floor_area', 'target_floors'],
+              },
+            },
+            mass_generation_settings: {
+              type: 'object',
+              description: 'Optional PODIUM_MULTI_TOWER placement settings. Defaults leave the full podium top available.',
+              properties: {
+                towerSetbackM: { type: 'number', description: 'Inward podium-top setback in metres. Default 0.' },
+                towerGapM: { type: 'number', description: 'Gap reserved between west/east tower zones in metres. Default 0.' },
+                containmentToleranceM: { type: 'number', description: 'Small geometry tolerance in metres, clamped to 0.01-0.05.' },
               },
             },
             parking: {

@@ -3,7 +3,7 @@ import { calculateSurfaceArea, round2 } from './geometry';
 import { highlightElements, clearHighlights } from './highlight';
 import { classifyRoomUnitType } from './room_classification';
 import { GYEONGJU_LIBRARY_REQUIREMENTS, parseRequirementsFromText } from '../data/building_requirements';
-import type { BuildingRequirements, CorePosition, CoreTemplate } from '../data/building_requirements';
+import type { BuildingRequirements, CorePosition, CoreTemplate, MassComponent } from '../data/building_requirements';
 import {
   clearAllMasses,
   placeBuildingMasses,
@@ -28,7 +28,7 @@ import {
  * - Fills missing position_hint values with conservative defaults.
  * - Recomputes derived_metrics from normalized building values.
  */
-function normalizeRequirements(raw: Record<string, any>): BuildingRequirements {
+export function normalizeRequirements(raw: Record<string, any>): BuildingRequirements {
   const DEFAULT_POSITIONS = ['center', 'northeast', 'southwest', 'southeast', 'northwest', 'north', 'south'];
   const CORE_POSITIONS: CorePosition[] = [
     'center',
@@ -171,6 +171,48 @@ function normalizeRequirements(raw: Record<string, any>): BuildingRequirements {
       ...(value.function_id ? { function_id: String(value.function_id) } : {}),
       ...(polygon && polygon.length >= 4 ? { polygon } : {}),
     };
+  };
+  const normalizeMassComponents = (value: unknown): MassComponent[] | undefined => {
+    if (!Array.isArray(value) || value.length === 0) return undefined;
+    return value.map((rawComponent: any) => {
+      const component: MassComponent = {
+        component_id: cleanText(rawComponent?.component_id),
+        component_type: cleanText(rawComponent?.component_type).toUpperCase(),
+        parent_component_id: rawComponent?.parent_component_id == null
+          ? null
+          : cleanText(rawComponent.parent_component_id),
+        start_floor: rawComponent?.start_floor ?? null,
+        end_floor: rawComponent?.end_floor ?? null,
+        ...(Object.prototype.hasOwnProperty.call(rawComponent ?? {}, 'applicable_floors')
+          ? {
+              applicable_floors: Array.isArray(rawComponent.applicable_floors)
+                ? rawComponent.applicable_floors.map((label: unknown) => cleanText(label))
+                : [],
+            }
+          : {}),
+        footprint_area: Number(rawComponent?.footprint_area),
+        footprint_width_m: rawComponent?.footprint_width_m != null && Number.isFinite(Number(rawComponent.footprint_width_m))
+          ? Number(rawComponent.footprint_width_m)
+          : null,
+        footprint_depth_m: rawComponent?.footprint_depth_m != null && Number.isFinite(Number(rawComponent.footprint_depth_m))
+          ? Number(rawComponent.footprint_depth_m)
+          : null,
+        center_x_m: rawComponent?.center_x_m != null && Number.isFinite(Number(rawComponent.center_x_m))
+          ? Number(rawComponent.center_x_m)
+          : null,
+        center_y_m: rawComponent?.center_y_m != null && Number.isFinite(Number(rawComponent.center_y_m))
+          ? Number(rawComponent.center_y_m)
+          : null,
+        position_hint: rawComponent?.position_hint == null ? null : cleanText(rawComponent.position_hint),
+        floor_heights_m: rawComponent?.floor_heights_m && typeof rawComponent.floor_heights_m === 'object'
+          ? rawComponent.floor_heights_m
+          : {},
+        base_offset_m: rawComponent?.base_offset_m != null && Number.isFinite(Number(rawComponent.base_offset_m))
+          ? Number(rawComponent.base_offset_m)
+          : null,
+      };
+      return component;
+    });
   };
   const normalizeCoreTemplateCollection = (value: any): CoreTemplate | CoreTemplate[] | undefined => {
     if (Array.isArray(value)) {
@@ -579,17 +621,51 @@ function normalizeRequirements(raw: Record<string, any>): BuildingRequirements {
     if (converted) return converted;
   }
 
-  const buildings = ((raw.buildings ?? []) as any[]).map((b, i) => {
+  const rawBuildings = ((raw.buildings ?? []) as any[]);
+  const rootBasement = raw.basement && typeof raw.basement === 'object' && !Array.isArray(raw.basement)
+    ? raw.basement as Record<string, any>
+    : null;
+  const mergeBasementRecords = (rootValue: unknown, buildingValue: unknown): Record<string, any> => ({
+    ...(rootValue && typeof rootValue === 'object' && !Array.isArray(rootValue) ? rootValue as Record<string, any> : {}),
+    ...(buildingValue && typeof buildingValue === 'object' && !Array.isArray(buildingValue) ? buildingValue as Record<string, any> : {}),
+  });
+
+  const buildings = rawBuildings.map((b, i) => {
+    // A document-level requirements.basement contract belongs to the sole
+    // program building. With multiple buildings that ownership is ambiguous,
+    // so only an explicitly nested building.basement is accepted.
+    const inheritedBasement = rawBuildings.length === 1 ? rootBasement : null;
+    const basement = inheritedBasement || b.basement
+      ? {
+          ...(inheritedBasement ?? {}),
+          ...(b.basement ?? {}),
+          floor_breakdown: mergeBasementRecords(inheritedBasement?.floor_breakdown, b.basement?.floor_breakdown),
+          floor_heights_m: mergeBasementRecords(inheritedBasement?.floor_heights_m, b.basement?.floor_heights_m),
+          floor_plans: mergeBasementRecords(inheritedBasement?.floor_plans, b.basement?.floor_plans),
+          floor_layout_types: mergeBasementRecords(inheritedBasement?.floor_layout_types, b.basement?.floor_layout_types),
+          floor_layout_intents: mergeBasementRecords(inheritedBasement?.floor_layout_intents, b.basement?.floor_layout_intents),
+        }
+      : null;
     const floors = b.target_floors ?? 3;
     const floorArea = b.target_floor_area ?? 1000;
     const footprint = b.footprint_area ?? Math.round(floorArea / floors);
     const normalizedFootprint = normalizeFootprintDimensions(footprint, b.footprint_width_m, b.footprint_depth_m);
-    const basementArea = Number(b.basement?.area_m2 ?? 0);
+    const basementArea = Number(basement?.area_m2 ?? 0);
+    const basementFloorAreas = Object.values(basement?.floor_breakdown ?? {})
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const basementFloorCount = Number(basement?.floors ?? 0);
+    const representativeBasementFootprintArea = basementFloorAreas.length > 0
+      ? Math.max(...basementFloorAreas)
+      : basementArea > 0 && basementFloorCount > 0
+        ? basementArea / basementFloorCount
+        : basementArea;
     const normalizedBasementFootprint = normalizeFootprintDimensions(
-      basementArea || Object.values(b.basement?.floor_breakdown ?? {}).reduce((sum: number, value: any) => sum + (Number(value) || 0), 0),
-      b.basement?.footprint_width_m,
-      b.basement?.footprint_depth_m,
+      representativeBasementFootprintArea,
+      basement?.footprint_width_m,
+      basement?.footprint_depth_m,
     );
+    const normalizedMassComponents = normalizeMassComponents(b.mass_components);
 
     return {
       name: cleanText(b.name ?? `Building ${String.fromCharCode(65 + i)}`),
@@ -606,16 +682,17 @@ function normalizeRequirements(raw: Record<string, any>): BuildingRequirements {
       floor_plans: normalizeFloorPlans(b.floor_plans),
       floor_layout_types: b.floor_layout_types ?? {},
       floor_layout_intents: b.floor_layout_intents ?? {},
-      ...(b.basement ? {
+      ...(normalizedMassComponents ? { mass_components: normalizedMassComponents } : {}),
+      ...(basement ? {
         basement: {
-          ...b.basement,
+          ...basement,
           ...normalizedBasementFootprint,
-          ...(normalizeCoreTemplateCollection(b.basement.core_template)
-            ? { core_template: normalizeCoreTemplateCollection(b.basement.core_template) }
+          ...(normalizeCoreTemplateCollection(basement.core_template)
+            ? { core_template: normalizeCoreTemplateCollection(basement.core_template) }
             : {}),
-          floor_plans: normalizeFloorPlans(b.basement.floor_plans),
-          floor_layout_types: b.basement.floor_layout_types ?? {},
-          floor_layout_intents: b.basement.floor_layout_intents ?? {},
+          floor_plans: normalizeFloorPlans(basement.floor_plans),
+          floor_layout_types: basement.floor_layout_types ?? {},
+          floor_layout_intents: basement.floor_layout_intents ?? {},
         },
       } : {}),
     };
@@ -650,6 +727,19 @@ function normalizeRequirements(raw: Record<string, any>): BuildingRequirements {
       actual_floor_area_ratio: siteArea > 0 ? parseFloat((totalFloorArea / siteArea).toFixed(4)) : 0,
       remaining_buildable_area: siteArea > 0 ? siteArea * coverageRatio - totalFootprint : 0,
     },
+    ...(raw.mass_generation_settings && typeof raw.mass_generation_settings === 'object'
+      ? {
+          mass_generation_settings: {
+            towerSetbackM: Number(raw.mass_generation_settings.towerSetbackM ?? raw.mass_generation_settings.tower_setback_m ?? 0),
+            towerGapM: Number(raw.mass_generation_settings.towerGapM ?? raw.mass_generation_settings.tower_gap_m ?? 0),
+            containmentToleranceM: Number(
+              raw.mass_generation_settings.containmentToleranceM
+              ?? raw.mass_generation_settings.containment_tolerance_m
+              ?? 0.02,
+            ),
+          },
+        }
+      : {}),
   };
 }
 function normalizeFloorAreasFromRooms(requirements: BuildingRequirements): BuildingRequirements {

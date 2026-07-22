@@ -15,7 +15,7 @@ export interface FloorHeights {
 }
 
 export type LayoutType = 'AUTO' | 'ROW_LAYOUT' | 'EDGE_STRIP' | 'L_SHAPE';
-export type MassLayoutType = 'AUTO' | 'RECTANGLE' | 'COURTYARD_U' | 'COURTYARD_O' | 'CIRCULAR' | 'RING_ATRIUM';
+export type MassLayoutType = 'AUTO' | 'RECTANGLE' | 'COURTYARD_U' | 'COURTYARD_O' | 'CIRCULAR' | 'RING_ATRIUM' | 'PODIUM_MULTI_TOWER';
 export type ShapePreference = 'RECTANGLE' | 'L_SHAPE' | 'U_SHAPE' | 'COMPACT_RECTANGLE' | 'LONG_RECTANGLE_AVOID' | 'CORE';
 export type CorePosition =
   | 'center'
@@ -103,6 +103,32 @@ export interface RoomLayout {
   adjacent_to?: string[];
 }
 
+export interface MassComponent {
+  component_id: string;
+  component_type: 'PODIUM' | 'TOWER' | string;
+  parent_component_id?: string | null;
+  start_floor?: string | number | null;
+  end_floor?: string | number | null;
+  applicable_floors?: string[];
+  footprint_area: number;
+  footprint_width_m?: number | null;
+  footprint_depth_m?: number | null;
+  center_x_m?: number | null;
+  center_y_m?: number | null;
+  position_hint?: string | null;
+  floor_heights_m?: FloorHeights;
+  base_offset_m?: number | null;
+}
+
+export interface MassGenerationSettings {
+  /** Inward offset from the podium top edge. Defaults to 0m. */
+  towerSetbackM?: number;
+  /** Clear distance reserved between west/east tower zones. Defaults to 0m. */
+  towerGapM?: number;
+  /** Floating-point containment/overlap tolerance. Defaults to 0.02m. */
+  containmentToleranceM?: number;
+}
+
 export interface BuildingMass {
   name: string;
   target_floor_area: number;
@@ -122,6 +148,7 @@ export interface BuildingMass {
   floor_layout_types?: Record<string, LayoutType>;
   floor_layout_intents?: Record<string, any>;
   basement?: BasementInfo;
+  mass_components?: MassComponent[];
 }
 
 export interface SiteLimits {
@@ -151,6 +178,7 @@ export interface BuildingRequirements {
     actual_floor_area_ratio: number;
     remaining_buildable_area: number;
   };
+  mass_generation_settings?: MassGenerationSettings;
 }
 
 /**
